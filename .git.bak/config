@@ -1,0 +1,13 @@
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+[branch "main"]
+	vscode-merge-base = origin/main
+[remote "upstream"]
+	url = https://github.com/Tushar365/discord_digest_V2-running.git
+	fetch = +refs/heads/*:refs/remotes/upstream/*
+[remote "origin"]
+	url = https://github.com/Tushar365/discord_digest_V2-running.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
