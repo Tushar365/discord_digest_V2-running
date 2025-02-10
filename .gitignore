@@ -5,3 +5,4 @@ venv
 messages.db
 __pycache__
 testapp.py
+.git.bak

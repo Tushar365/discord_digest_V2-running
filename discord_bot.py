@@ -2,6 +2,12 @@ import discord
 from dotenv import load_dotenv
 import os
 from message_db import store_message, init_db
+import logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename='discord_bot.log'
+)
 
 load_dotenv()
 

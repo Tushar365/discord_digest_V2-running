@@ -1,4 +1,4 @@
-
+# app.py
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -9,8 +9,23 @@ from scheduler import DigestScheduler, get_next_email_time
 from email_sender import send_email
 import plotly.express as px
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 import logging
+import importlib
+import discord_bot
+import json
+from base_config import (
+    DISCORD_CONFIG,
+    OPENAI_CONFIG,
+    EMAIL_CONFIG,
+    DB_CONFIG
+)
+
+if 'scheduler_process' not in st.session_state:
+    st.session_state.scheduler_process = None
+
+importlib.reload(discord_bot)  # Reload to get fresh status
+is_connected = discord_bot.check_connection_status()
 
 # Configure logging
 logging.basicConfig(
@@ -37,22 +52,65 @@ if 'bot_process' not in st.session_state:
 
 def check_bot_status():
     try:
-        if st.session_state.bot_process:
-            return st.session_state.bot_process.poll() is None
+        # First check if process exists and is running
+        process_running = (
+            st.session_state.bot_process is not None and 
+            st.session_state.bot_process.poll() is None
+        )
+        
+        if process_running:
+            # Import with reload to get fresh status
+            import importlib
+            import discord_bot
+            importlib.reload(discord_bot)
+            return discord_bot.check_connection_status()
+        
         return False
-    except:
+    except Exception as e:
+        logger.error(f"Error checking bot status: {e}", exc_info=True)
         return False
+
 
 def start_bot():
     try:
         if not check_bot_status():
             import subprocess
-            st.session_state.bot_process = subprocess.Popen(['python', 'discord_bot.py'])
-            return True
+            import sys
+            import time
+            
+            # Get the Python executable path
+            python_executable = sys.executable
+            
+            # Start the bot process with the correct Python interpreter
+            st.session_state.bot_process = subprocess.Popen(
+                [python_executable, 'discord_bot.py'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Wait for a moment to let the bot initialize
+            time.sleep(5)
+            
+            # Check if process is still running and connected
+            if st.session_state.bot_process.poll() is None:
+                # Try to import and check connection
+                import discord_bot
+                if discord_bot.check_connection_status():
+                    return True
+                else:
+                    logger.error("Bot process started but failed to connect")
+                    stop_bot()
+            else:
+                # If process has terminated, get error output
+                _, stderr = st.session_state.bot_process.communicate()
+                logger.error(f"Bot failed to start. Error: {stderr}")
+                st.session_state.bot_process = None
+                
+            return False
     except Exception as e:
         logger.error(f"Error starting bot: {e}", exc_info=True)
         return False
-    return False
 
 def stop_bot():
     try:
@@ -96,55 +154,36 @@ def stop_bot():
 st.sidebar.title("Discord Digest Controls")
 
 # Bot Control Section
-st.sidebar.subheader("Bot Control")
+# Bot Control Section
+st.sidebar.subheader("Connect to the Discord Server")
 
-# Check if bot client exists and is connected
-import discord_bot
-is_connected = discord_bot.check_connection_status()
+def get_last_logs(n=2):
+    try:
+        with open('discord_bot.log', 'r') as log_file:
+            lines = log_file.readlines()
+            last_logs = lines[-n:] if len(lines) >= n else lines
+            return ''.join(last_logs)
+    except FileNotFoundError:
+        return "No logs found"
+    except Exception as e:
+        return f"Error reading logs: {str(e)}"
 
-# Status indicator
-status_color = "🟢" if is_connected else "🔴"
-st.sidebar.markdown(f"### {status_color} Bot Status: {'Connected' if is_connected else 'Disconnected'}")
-
-if not is_connected:
-    if st.sidebar.button("Connect Bot"):
-        try:
-            # Import subprocess here to ensure it's available
-            import subprocess
-            import time
-            
-            # Start the bot process
-            st.session_state.bot_process = subprocess.Popen(['python', 'discord_bot.py'])
-            
-            # Wait for a moment to let the bot connect
-            time.sleep(2)
-            
-            # Check if process is still running
-            if st.session_state.bot_process.poll() is None:
-                st.sidebar.success("Bot started successfully!")
-                st.rerun()
-            else:
-                st.sidebar.error("Bot failed to start")
-                st.session_state.bot_process = None
-        except Exception as e:
-            st.sidebar.error(f"Connection error: {str(e)}")
-            if hasattr(st.session_state, 'bot_process') and st.session_state.bot_process:
-                st.session_state.bot_process.kill()
-                st.session_state.bot_process = None
-else:
-    if st.sidebar.button("Disconnect"):
-        if stop_bot():
-            st.sidebar.success("Bot disconnected successfully!")
-            st.rerun()
+if st.sidebar.button("Connect"):
+    with st.spinner("Starting bot..."):
+        if start_bot():
+            st.sidebar.success("Bot connected successfully!")
         else:
-            st.sidebar.error("Failed to disconnect bot")
+            st.sidebar.error("Bot connected successfully!")
 
+# Display last 2 logs
+st.sidebar.text_area("Recent Logs", get_last_logs(2), height=100)
 st.sidebar.divider()
 
 page = st.sidebar.selectbox(
     "Select Page",
-    ["Dashboard", "Message Viewer", "Email Controls"]
+    ["Dashboard", "Message Viewer", "Email Controls", "Settings"]
 )
+
 
 def load_messages(days=1):
     try:
@@ -303,7 +342,145 @@ def show_email_controls():
     except Exception as e:
         logger.error(f"Error in digest generation: {e}", exc_info=True)
         st.error(f"Failed to generate digest: {str(e)}")
+def update_env_file(key, value):
+    """Update .env file with new value."""
+    try:
+        dotenv_file = os.path.join(os.path.dirname(__file__), '.env')
+        set_key(dotenv_file, key, value)
+        return True
+    except Exception as e:
+        logger.error(f"Error updating .env file: {e}")
+        return False
 
+def save_discord_config(updates):
+    """Save Discord configuration updates to a JSON file."""
+    try:
+        with open('discord_config.json', 'w') as f:
+            json.dump(updates, f, indent=4)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving Discord configuration: {e}")
+        return False
+
+def load_discord_config():
+    """Load Discord configuration from JSON file."""
+    try:
+        if os.path.exists('discord_config.json'):
+            with open('discord_config.json', 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading Discord configuration: {e}")
+    return {}
+
+
+def show_settings():
+    st.title("Essential Settings")
+    
+    # Load current configurations
+    discord_config = load_discord_config()
+    
+    with st.form("settings_form"):
+        st.subheader("Schedule Settings")
+        
+        # Timezone selection
+        timezones = pytz.all_timezones
+        current_tz = discord_config.get('DEFAULT_TIMEZONE', DISCORD_CONFIG['DEFAULT_TIMEZONE'])
+        new_tz = st.selectbox(
+            "Timezone",
+            timezones,
+            index=timezones.index(current_tz),
+            help="Select your local timezone"
+        )
+        
+        # Time settings
+        col1, col2 = st.columns(2)
+        with col1:
+            hour = st.number_input(
+                "Hour (24-hour)",
+                min_value=0,
+                max_value=23,
+                value=discord_config.get('DEFAULT_HOUR', DISCORD_CONFIG['DEFAULT_HOUR']),
+                help="Hour to send the daily digest (24-hour format)"
+            )
+        with col2:
+            minute = st.number_input(
+                "Minute",
+                min_value=0,
+                max_value=59,
+                value=discord_config.get('DEFAULT_MINUTE', DISCORD_CONFIG['DEFAULT_MINUTE']),
+                help="Minute to send the daily digest"
+            )
+        
+        st.divider()
+        st.subheader("Discord Settings")
+        
+        # Channel IDs
+        channel_ids = st.text_input(
+            "Channel IDs",
+            value=','.join(map(str, discord_config.get('TARGET_CHANNEL_IDS', DISCORD_CONFIG['TARGET_CHANNEL_IDS']))),
+            help="Enter channel IDs separated by commas (e.g., 123456789,987654321)"
+        )
+        
+        # Discord Token
+        current_token = os.getenv('DISCORD_TOKEN', '')
+        new_token = st.text_input(
+            "Discord Token",
+            value=current_token,
+            type="password",
+            help="Your Discord bot token"
+        )
+        
+        st.divider()
+        st.subheader("Email Settings")
+        
+        # Receiver Email
+        current_email = os.getenv('EMAIL_TO', '')
+        new_email = st.text_input(
+            "Receiver Email",
+            value=current_email,
+            help="Email address to receive the daily digest"
+        )
+        
+        # Submit button
+        submitted = st.form_submit_button("Save All Settings")
+        
+        if submitted:
+            # Update Discord configuration
+            discord_updates = {
+                'DEFAULT_TIMEZONE': new_tz,
+                'DEFAULT_HOUR': hour,
+                'DEFAULT_MINUTE': minute,
+                'TARGET_CHANNEL_IDS': [int(id.strip()) for id in channel_ids.split(',') if id.strip()]
+            }
+            
+            # Save Discord config
+            discord_saved = save_discord_config(discord_updates)
+            
+            # Update environment variables
+            env_updates = []
+            if new_token != current_token:
+                env_updates.append(('DISCORD_TOKEN', new_token))
+            if new_email != current_email:
+                env_updates.append(('EMAIL_TO', new_email))
+            
+            # Apply environment updates
+            env_saved = all(update_env_file(key, value) for key, value in env_updates)
+            
+            if discord_saved and env_saved:
+                st.success("All settings saved successfully!")
+                st.info("Please restart the application for changes to take effect.")
+            else:
+                st.error("Failed to save some settings. Please try again.")
+
+    # Display current schedule information
+    st.divider()
+    if st.button("Show Next Scheduled Digest"):
+        try:
+            next_email_info = get_next_email_time(new_tz, hour, minute)
+            st.info(f"Next digest will be sent at: {next_email_info['next_email_time']}")
+            st.info(f"Time until next digest: {next_email_info['time_until_next_email']}")
+        except Exception as e:
+            st.error(f"Error calculating next digest time: {str(e)}")
 # Main content
 if page == "Dashboard":
     show_dashboard()
@@ -311,7 +488,9 @@ elif page == "Message Viewer":
     show_message_viewer()
 elif page == "Email Controls":
     show_email_controls()
+elif page == "Settings":
+    show_settings()
 
 # Footer
 st.sidebar.markdown("---")
-st.sidebar.markdown("Discord Digest Bot v1.0")
+st.sidebar.markdown("Discord Digest Bot v2.0")

@@ -1,4 +1,4 @@
-
+# base_config.py
 """Base configuration settings for Discord Digest."""
 from typing import Dict, Any
 
